@@ -12,7 +12,7 @@ class filterFasta():
         self.seqHeaders = [ header for header, seq in self.seq.items() ]
         self.tarHeaders = [ header.strip() for header in open(headers) ]
 
-    def filter_sequences(self, exclude=False):
+    def filter_sequences(self, outfile, exclude=False):
         matched = []
         for header in self.tarHeaders:
             r = re.compile(header)
@@ -26,8 +26,8 @@ class filterFasta():
             selected = matches
             print("sequences to be included: " + str(len(selected)))
         seqObjects = [ self.seq[identifier] for identifier in selected ]
-        SeqIO.write(seqObjects, "test", "fasta")
-        pass
+        SeqIO.write(seqObjects, outfile, "fasta")
+        return selected
 
 
 if __name__ == "__main__":
@@ -42,10 +42,10 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--exclude", default=False, action="store_true", 
             required=False, help="""Flag to exclude given headers rather than
             include""")
-    parser.add_argument("-o", "--outfile", required=False, help="""Filename to 
+    parser.add_argument("-o", "--outfile", required=True, help="""Filename to 
             save resulting sequences to. Otherwise prints to stdout.""")
 
     args = parser.parse_args()
 
     f = filterFasta(args.fastaFile, args.headerFile)
-    f.filter_sequences(args.exclude)
+    f.filter_sequences(args.outfile, args.exclude)
