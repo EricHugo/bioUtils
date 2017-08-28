@@ -22,10 +22,9 @@ class translateFasta():
                     table=ttable, cds=True)) + '\n')
             except Bio.Data.CodonTable.TranslationError:
                 print("Warning: sequence %s not considered CDS. Writing \
-                        translation regardless." % identifier)
+                        translation regardless." % identifier, file=sys.stderr)
                 output_handle.write(str(seqObject.seq.translate(to_stop=True,
                     table=ttable)) + '\n')
-
 
 
 if __name__ == "__main__":
