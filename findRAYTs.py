@@ -9,6 +9,7 @@ from distutils import spawn
 from collections import defaultdict
 import sys
 import re
+import os
 import argparse
 import shutil
 import multiprocessing as mp
@@ -20,14 +21,24 @@ def worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
     elif seqType == "fna":
         faa = micomplete.create_proteome(fasta, name)
     elif re.match("(gb.?.?)|genbank", seqType):
-        faa = micomplete.cextract_gbk_trans(fasta, name)
+        faa = micomplete.extract_gbk_trans(fasta, name)
     else:
         raise TypeError('Sequence type needs to be one of faa/fna/gbk')
+    baseName = os.path.basename(fasta).split('.')[0]
+    if not name:
+        name = baseName
     get_RAYTs(faa, name, hmm, evalue)
+    return faa
 
 def listener(q):
     """Process to write results in a thread safe manner"""
-    pass
+    handle = open_stdout(outfile)
+    while True:
+        output = q.get()
+        if type(output) == str:
+            handle.write()
+        else:
+            continue
 
 @contextmanager
 def open_stdout(outfile):
@@ -46,18 +57,24 @@ def open_stdout(outfile):
             handle.close()
 
 def get_RAYTs(faa, name, hmm, evalue=1e-20):
+    """Retrieves markers in hmm from the given proteome"""
     comp = calcCompleteness(faa, name, hmm, evalue)
     foundRAYTs, dupRAYTs, totl = comp.get_completeness()
-
     # ensure unique, best RAYT match for each gene
     # but allow infinite gene matches for each RAYT
+    print(foundRAYTs)
     gene_matches = defaultdict(list)
     for RAYT, match in foundRAYTs.items():
         for gene, evalue in match:
             if gene not in gene_matches:
                 gene_matches[gene].append([RAYT, evalue])
+            elif float(evalue) < float(gene_matches[gene][0][1]):
+                print(evalue)
+                gene_matches[gene].pop()
+                gene_matches[gene].append([RAYT, evalue])
+            print(gene + evalue)
+            print(gene_matches[gene])
         print(gene_matches[gene])
-            
 
 
 def main():
@@ -74,7 +91,6 @@ def main():
                         or linkage analysis""")
     parser.add_argument("--threads", required=False, default=1, 
             help="""Number of threads to be used concurrently""")
-
     args = parser.parse_args()
 
     try:
@@ -92,20 +108,20 @@ def main():
     print(inputSeqs)
     manager = mp.Manager()
     q = manager.Queue()
-    pool = mp.Pool(processes=args.threads + 1)
+    pool = mp.Pool(processes=int(args.threads) + 1)
     # init listener here
 
     jobs = []
     for i in inputSeqs: 
+        print(i)
         if len(i) == 2:
             i.append(None)
-        job = pool.apply_async(worker(i[0], i[1], i[2], args.hmms))
+        job = pool.apply_async(worker, (i[0], i[1], i[2], args.hmms))
         jobs.append(job)
     # get() all processes to catch errors
     for job in jobs:
         job.get()
     q.put("done")
-    weights_file = writer.get()
     pool.close()
     pool.join()
 
