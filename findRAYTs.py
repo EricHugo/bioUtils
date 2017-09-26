@@ -7,15 +7,19 @@ from micomplete import micomplete
 from contextlib import contextmanager
 from distutils import spawn
 from collections import defaultdict
+from ftplib import FTP
 import sys
+import mmap
 import re
 import os
 import argparse
 import shutil
 import multiprocessing as mp
 import subprocess
+import tarfile
+import hashlib
 
-def worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
+def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
     if seqType == "faa":
         faa = fasta
     elif seqType == "fna":
@@ -27,7 +31,8 @@ def worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
     baseName = os.path.basename(fasta).split('.')[0]
     if not name:
         name = baseName
-    get_RAYTs(faa, name, hmm, evalue)
+    gene_matches = get_RAYTs(faa, name, hmm, evalue)
+    rayt_gene_list = extract_hits(faa, seqType, gene_matches)
     return faa
 
 def listener(q):
@@ -36,7 +41,9 @@ def listener(q):
     while True:
         output = q.get()
         if type(output) == str:
-            handle.write()
+            handle.write(output)
+        elif output == "done":
+            break
         else:
             continue
 
@@ -49,7 +56,7 @@ def open_stdout(outfile):
         handle = open(outfile, 'w')
     else:
         handle = sys.stdout
-    # close open file if not stdout
+    # close and flush open file if not stdout
     try:
         yield handle
     finally:
@@ -75,7 +82,49 @@ def get_RAYTs(faa, name, hmm, evalue=1e-20):
             print(gene + evalue)
             print(gene_matches[gene])
         print(gene_matches[gene])
+    print(gene_matches)
+    return gene_matches
 
+def extract_hits(faa, seqType, gene_RAYT):
+    """Extract the protein sequences from a given proteome given a dict of 
+    gene names"""
+    rayt_gene_list = set( gene for gene, rayt in gene_RAYT.items() )
+    rayt_proteins = [ seq for seq in SeqIO.parse(faa, "fasta") if seq.id in
+            rayt_gene_list ]
+    print(rayt_proteins)
+    return rayt_proteins
+
+def parse_taxonomy(path='taxonomy'):
+    """Module downloads, unpacks, and parses ncbi taxdump"""
+    with FTP('ftp.ncbi.nih.gov') as ncbi:
+        ncbi.login()
+        ncbi.cwd('pub/taxonomy/')
+        print("Downloading taxdump from NCBI...", file=sys.stderr, end='',
+                flush=True)
+        ncbi.retrbinary('RETR taxdump.tar.gz', open('taxdump.tar.gz',
+            'wb').write)
+        ncbi.retrbinary('RETR taxdump.tar.gz.md5', open('taxdump.tar.gz.md5',
+            'wb').write)
+        print(" Done", file=sys.stderr)
+        ncbi.quit()
+    try:
+        os.mkdir(path)
+    except FileExistsError:
+        pass
+    local_md5 = hashlib.md5(open('taxdump.tar.gz', 'rb').read()).hexdigest()
+    with open('taxdump.tar.gz.md5') as md5:
+        ncbi_md5 = md5.readline().split()[0]
+        if not ncbi_md5 == local_md5:
+            raise ValueError('Local md5 checksum does not equal value from ncbi')
+    tar = tarfile.open('taxdump.tar.gz')
+    tar.extractall(path=path)
+    os.remove('taxdump.tar.gz')
+    os.remove('taxdump.tar.gz.md5')
+    with open(path + '/nodes.dmp', 'rb') as node_file:
+        m = mmap.mmap(node_file.fileno(), 0, prot=mmap.PROT_READ)
+        node = m.readline()
+        print(node)
+    return node
 
 def main():
     parser = argparse.ArgumentParser(description="""For a given set of genomes
@@ -103,6 +152,9 @@ def main():
         except AssertionError:
             raise RuntimeError('Unable to find hmmsearch in path')
 
+    parse_taxonomy()
+
+
     with open(args.fastaList) as seq_file:
         inputSeqs = [ seq.strip().split('\t') for seq in seq_file ]
     print(inputSeqs)
@@ -116,7 +168,7 @@ def main():
         print(i)
         if len(i) == 2:
             i.append(None)
-        job = pool.apply_async(worker, (i[0], i[1], i[2], args.hmms))
+        job = pool.apply_async(_worker, (i[0], i[1], i[2], args.hmms))
         jobs.append(job)
     # get() all processes to catch errors
     for job in jobs:
