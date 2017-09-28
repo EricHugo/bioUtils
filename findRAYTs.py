@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from distutils import spawn
 from collections import defaultdict
 from ftplib import FTP
+from datetime import datetime
 import sys
 import mmap
 import re
@@ -94,8 +95,16 @@ def extract_hits(faa, seqType, gene_RAYT):
     print(rayt_proteins)
     return rayt_proteins
 
-def parse_taxonomy(path='taxonomy'):
+def download_taxonomy(tax_path='taxonomy'):
     """Module downloads, unpacks, and parses ncbi taxdump"""
+    try:
+        modified_time = datetime.fromtimestamp(os.path.getmtime(tax_path +
+            '/nodes.dmp'))
+        age = datetime.today() - modified_time
+        if not age.days >= 2:
+            return
+    except FileNotFoundError:
+        pass
     with FTP('ftp.ncbi.nih.gov') as ncbi:
         ncbi.login()
         ncbi.cwd('pub/taxonomy/')
@@ -108,7 +117,7 @@ def parse_taxonomy(path='taxonomy'):
         print(" Done", file=sys.stderr)
         ncbi.quit()
     try:
-        os.mkdir(path)
+        os.mkdir(tax_path)
     except FileExistsError:
         pass
     local_md5 = hashlib.md5(open('taxdump.tar.gz', 'rb').read()).hexdigest()
@@ -117,10 +126,10 @@ def parse_taxonomy(path='taxonomy'):
         if not ncbi_md5 == local_md5:
             raise ValueError('Local md5 checksum does not equal value from ncbi')
     tar = tarfile.open('taxdump.tar.gz')
-    tar.extractall(path=path)
+    tar.extractall(path=tax_path)
     os.remove('taxdump.tar.gz')
     os.remove('taxdump.tar.gz.md5')
-    with open(path + '/nodes.dmp', 'rb') as node_file:
+    with open(tax_path + '/nodes.dmp', 'rb') as node_file:
         m = mmap.mmap(node_file.fileno(), 0, prot=mmap.PROT_READ)
         node = m.readline()
         print(node)
@@ -152,7 +161,7 @@ def main():
         except AssertionError:
             raise RuntimeError('Unable to find hmmsearch in path')
 
-    parse_taxonomy()
+    download_taxonomy()
 
 
     with open(args.fastaList) as seq_file:
