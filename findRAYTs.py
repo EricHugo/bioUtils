@@ -20,13 +20,81 @@ import subprocess
 import tarfile
 import hashlib
 
+class parse_taxonomy():
+    def __init__(self, tax_path='taxonomy'):
+        self.tax_path = tax_path
+        self.download_taxonomy()
+        self.tax_names = tax_path + '/names.dmp'
+        self.tax_nodes = tax_path + '/nodes.dmp'
+
+    def download_taxonomy(self):
+        """Module downloads, unpacks, and verifies ncbi taxdump"""
+        try:
+            modified_time = datetime.fromtimestamp(os.path.getmtime(self.tax_path +
+                '/nodes.dmp'))
+            age = datetime.today() - modified_time
+            if not age.days >= 2:
+                return
+        except FileNotFoundError:
+            pass
+        with FTP('ftp.ncbi.nih.gov') as ncbi:
+            ncbi.login()
+            ncbi.cwd('pub/taxonomy/')
+            print("Downloading taxdump from NCBI...", file=sys.stderr, end='',
+                    flush=True)
+            ncbi.retrbinary('RETR taxdump.tar.gz', open('taxdump.tar.gz',
+                'wb').write)
+            ncbi.retrbinary('RETR taxdump.tar.gz.md5', open('taxdump.tar.gz.md5',
+                'wb').write)
+            print(" Done", file=sys.stderr)
+            ncbi.quit()
+        try:
+            os.mkdir(self.tax_path)
+        except FileExistsError:
+            pass
+        local_md5 = hashlib.md5(open('taxdump.tar.gz', 'rb').read()).hexdigest()
+        with open('taxdump.tar.gz.md5') as md5:
+            ncbi_md5 = md5.readline().split()[0]
+            if not ncbi_md5 == local_md5:
+                raise ValueError('Local md5 checksum does not equal value from ncbi')
+        tar = tarfile.open('taxdump.tar.gz')
+        tar.extractall(path=self.tax_path)
+        os.remove('taxdump.tar.gz')
+        os.remove('taxdump.tar.gz.md5')
+
+    def find_taxid(self, name):
+        with open(self.tax_names, 'r') as names_file:
+            for tax in names_file:
+                if re.fullmatch(name, tax.split('|')[1].strip()):
+                    taxid = tax.split('|')[0]
+        return taxid
+
+    def find_scientific_name(self, taxid):
+        with open(self.tax_names, 'r') as names_file:
+            for tax in names_file:
+                if re.fullmatch(taxid, tax.split('|')[0].strip()):
+                    name = tax.split('|')[1]
+        return name
+
+    def parse_taxa(self, taxid):
+        with open(self.tax_nodes, 'r+b') as node_file:
+            m = mmap.mmap(node_file.fileno(), 0, prot=mmap.PROT_READ)
+            parent = [ node.split('|')[0].strip() for node in iter(m.readline, "") if 
+                    re.fullmatch(taxid, node.split('|')[1].strip()) ]
+            print(parent)
+                
+
 def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
+    tax = parse_taxonomy()
     if seqType == "faa":
         faa = fasta
     elif seqType == "fna":
-        faa = micomplete.create_proteome(fasta, name)
+        faa = micomplete.create_proteome(fasta, name + '.faa')
     elif re.match("(gb.?.?)|genbank", seqType):
-        faa = micomplete.extract_gbk_trans(fasta, name)
+        name = get_gbk_feature(fasta, 'organism')
+        faa = micomplete.extract_gbk_trans(fasta, name + '.faa')
+        taxid = tax.find_taxid(name)
+        tax.parse_taxa(taxid)
     else:
         raise TypeError('Sequence type needs to be one of faa/fna/gbk')
     baseName = os.path.basename(fasta).split('.')[0]
@@ -95,45 +163,14 @@ def extract_hits(faa, seqType, gene_RAYT):
     print(rayt_proteins)
     return rayt_proteins
 
-def download_taxonomy(tax_path='taxonomy'):
-    """Module downloads, unpacks, and parses ncbi taxdump"""
-    try:
-        modified_time = datetime.fromtimestamp(os.path.getmtime(tax_path +
-            '/nodes.dmp'))
-        age = datetime.today() - modified_time
-        if not age.days >= 2:
-            return
-    except FileNotFoundError:
-        pass
-    with FTP('ftp.ncbi.nih.gov') as ncbi:
-        ncbi.login()
-        ncbi.cwd('pub/taxonomy/')
-        print("Downloading taxdump from NCBI...", file=sys.stderr, end='',
-                flush=True)
-        ncbi.retrbinary('RETR taxdump.tar.gz', open('taxdump.tar.gz',
-            'wb').write)
-        ncbi.retrbinary('RETR taxdump.tar.gz.md5', open('taxdump.tar.gz.md5',
-            'wb').write)
-        print(" Done", file=sys.stderr)
-        ncbi.quit()
-    try:
-        os.mkdir(tax_path)
-    except FileExistsError:
-        pass
-    local_md5 = hashlib.md5(open('taxdump.tar.gz', 'rb').read()).hexdigest()
-    with open('taxdump.tar.gz.md5') as md5:
-        ncbi_md5 = md5.readline().split()[0]
-        if not ncbi_md5 == local_md5:
-            raise ValueError('Local md5 checksum does not equal value from ncbi')
-    tar = tarfile.open('taxdump.tar.gz')
-    tar.extractall(path=tax_path)
-    os.remove('taxdump.tar.gz')
-    os.remove('taxdump.tar.gz.md5')
-    with open(tax_path + '/nodes.dmp', 'rb') as node_file:
-        m = mmap.mmap(node_file.fileno(), 0, prot=mmap.PROT_READ)
-        node = m.readline()
-        print(node)
-    return node
+def get_gbk_feature(handle, feature_type):
+    """Get specified organism feature from gbk file"""
+    input_handle = open(handle, mode='r')
+    for record in SeqIO.parse(input_handle, "genbank"):
+        for feature in record.features:
+            if feature.type == "source":
+                value = ''.join(feature.qualifiers[feature_type])
+    return value
 
 def main():
     parser = argparse.ArgumentParser(description="""For a given set of genomes
@@ -160,9 +197,6 @@ def main():
             assert spawn.find_executable('hmmsearch')
         except AssertionError:
             raise RuntimeError('Unable to find hmmsearch in path')
-
-    download_taxonomy()
-
 
     with open(args.fastaList) as seq_file:
         inputSeqs = [ seq.strip().split('\t') for seq in seq_file ]
