@@ -63,13 +63,15 @@ class parse_taxonomy():
         os.remove('taxdump.tar.gz.md5')
 
     def find_taxid(self, name):
+        """Given full scientific name: return taxid"""
         with open(self.tax_names, 'r') as names_file:
             for tax in names_file:
                 if re.fullmatch(name, tax.split('|')[1].strip()):
-                    taxid = tax.split('|')[0]
+                    taxid = tax.split('|')[0].strip()
         return taxid
 
     def find_scientific_name(self, taxid):
+        """Given taxid, return full scientific name"""
         with open(self.tax_names, 'r') as names_file:
             for tax in names_file:
                 if re.fullmatch(taxid, tax.split('|')[0].strip()):
@@ -77,11 +79,17 @@ class parse_taxonomy():
         return name
 
     def parse_taxa(self, taxid):
+        """Will locate parent of given taxid, loop to find full taxonomic list,
+        returns None when super kingdom is reached"""
+        print(taxid)
         with open(self.tax_nodes, 'r+b') as node_file:
             m = mmap.mmap(node_file.fileno(), 0, prot=mmap.PROT_READ)
-            parent = [ node.split('|')[0].strip() for node in iter(m.readline, "") if 
-                    re.fullmatch(taxid, node.split('|')[1].strip()) ]
+            
+            parent = [ str(node, "utf-8").split('|')[1].strip() 
+                    for node in iter(m.readline, bytes()) 
+                    if re.fullmatch(str(taxid), str(node, "utf-8").split('|')[0].strip()) ]
             print(parent)
+            return parent
                 
 
 def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
@@ -89,7 +97,7 @@ def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
     if seqType == "faa":
         faa = fasta
     elif seqType == "fna":
-        faa = micomplete.create_proteome(fasta, name + '.faa')
+        faa = micomplete.create_proteome(fasta)
     elif re.match("(gb.?.?)|genbank", seqType):
         name = get_gbk_feature(fasta, 'organism')
         faa = micomplete.extract_gbk_trans(fasta, name + '.faa')
@@ -197,6 +205,8 @@ def main():
             assert spawn.find_executable('hmmsearch')
         except AssertionError:
             raise RuntimeError('Unable to find hmmsearch in path')
+
+    parse_taxonomy()
 
     with open(args.fastaList) as seq_file:
         inputSeqs = [ seq.strip().split('\t') for seq in seq_file ]
