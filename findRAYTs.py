@@ -82,14 +82,25 @@ class parse_taxonomy():
         """Will locate parent of given taxid, loop to find full taxonomic list,
         returns None when super kingdom is reached"""
         print(taxid)
+        taxids = taxid.split()
+        ranks = []
         with open(self.tax_nodes, 'r+b') as node_file:
             m = mmap.mmap(node_file.fileno(), 0, prot=mmap.PROT_READ)
-            
-            parent = [ str(node, "utf-8").split('|')[1].strip() 
-                    for node in iter(m.readline, bytes()) 
-                    if re.fullmatch(str(taxid), str(node, "utf-8").split('|')[0].strip()) ]
-            print(parent)
-            return parent
+            while True:
+                # dict comp to quickly find match first field and retrieve second
+                parent = [ (taxids.append(str(node, "utf-8").split('|')[1].strip()),
+                        ranks.append(str(node, "utf-8").split('|')[2].strip()))
+                        for node in iter(m.readline, bytes()) 
+                        if re.fullmatch(str(taxids[-1]), str(node, "utf-8").split('|')[0].strip()) ]
+                print(taxids)
+                print(ranks)
+                m.seek(0)
+                if taxids[-1] == '1':
+                    taxids.pop()
+                    ranks[0] = "Name"
+                    break
+        print(taxid)
+        return parent
                 
 
 def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
