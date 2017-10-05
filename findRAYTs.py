@@ -68,6 +68,7 @@ class parse_taxonomy():
             for tax in names_file:
                 if re.fullmatch(name, tax.split('|')[1].strip()):
                     taxid = tax.split('|')[0].strip()
+                    break
         return taxid
 
     def find_scientific_name(self, taxid):
@@ -75,13 +76,13 @@ class parse_taxonomy():
         with open(self.tax_names, 'r') as names_file:
             for tax in names_file:
                 if re.fullmatch(taxid, tax.split('|')[0].strip()):
-                    name = tax.split('|')[1]
+                    name = tax.split('|')[1].strip()
+                    break
         return name
 
     def parse_taxa(self, taxid):
-        """Will locate parent of given taxid, loop to find full taxonomic list,
-        returns None when super kingdom is reached"""
-        print(taxid)
+        """Will locate parent of given taxid, recursively loop to find full i
+        taxonomic list, returns list of tuple(rank, taxid) pairs"""
         taxids = taxid.split()
         ranks = []
         with open(self.tax_nodes, 'r+b') as node_file:
@@ -91,16 +92,14 @@ class parse_taxonomy():
                 parent = [ (taxids.append(str(node, "utf-8").split('|')[1].strip()),
                         ranks.append(str(node, "utf-8").split('|')[2].strip()))
                         for node in iter(m.readline, bytes()) 
-                        if re.fullmatch(str(taxids[-1]), str(node, "utf-8").split('|')[0].strip()) ]
-                print(taxids)
-                print(ranks)
+                        if re.fullmatch(str(taxids[-1]), str(node, "utf-8").
+                            split('|')[0].strip()) ]
                 m.seek(0)
                 if taxids[-1] == '1':
                     taxids.pop()
                     ranks[0] = "Name"
                     break
-        print(taxid)
-        return parent
+        return list(zip(ranks, taxids))
                 
 
 def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
@@ -113,7 +112,10 @@ def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
         name = get_gbk_feature(fasta, 'organism')
         faa = micomplete.extract_gbk_trans(fasta, name + '.faa')
         taxid = tax.find_taxid(name)
-        tax.parse_taxa(taxid)
+        lineage = tax.parse_taxa(taxid)
+        print(lineage)
+        taxonomy = { rank: tax.find_scientific_name(taxid) for rank, taxid in lineage }
+        print(taxonomy)
     else:
         raise TypeError('Sequence type needs to be one of faa/fna/gbk')
     baseName = os.path.basename(fasta).split('.')[0]
@@ -123,16 +125,15 @@ def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
     rayt_gene_list = extract_hits(faa, seqType, gene_matches)
     return faa
 
-def listener(q):
+def _listener(q, outfile='-'):
     """Process to write results in a thread safe manner"""
-    handle = open_stdout(outfile)
-    while True:
-        output = q.get()
-        if type(output) == str:
-            handle.write(output)
-        elif output == "done":
-            break
-        else:
+    with open_stdout(outfile) as handle:
+        while True:
+            output = q.get()
+            if output == "done":
+                break
+            elif type(output) is dict:
+                handle.write(output)
             continue
 
 @contextmanager
@@ -198,11 +199,16 @@ def main():
 
     parser.add_argument("fastaList", help="""Sequence(s) along with type (fna, 
             faa, gbk) provided in a tabular format""")
-    parser.add_argument("-o", "--outfile", required=False, help="""Filename to 
-            save results. Otherwise prints to stdout.""")
+    parser.add_argument("-o", "--outfile", required=False, default="-",
+            help="""Filename to save results. Otherwise prints to stdout.""")
     parser.add_argument("--hmms", required=False, default=False,
             help="""Specifies a set of HMMs to be used for completeness check 
                         or linkage analysis""")
+    parser.add_argument("--taxa", required=False, help="""Query specific taxonomic
+            group, requires a csv of the appropriate group from the NCBI genome
+            browser""")
+    parser.add_argument("--glist", required=False, help="""Genome list in csv 
+            format from the NCBI genome browser, required with '--taxa' argument""")
     parser.add_argument("--threads", required=False, default=1, 
             help="""Number of threads to be used concurrently""")
     args = parser.parse_args()
@@ -217,6 +223,7 @@ def main():
         except AssertionError:
             raise RuntimeError('Unable to find hmmsearch in path')
 
+    # Initialise taxdump, threadsafety
     parse_taxonomy()
 
     with open(args.fastaList) as seq_file:
@@ -226,7 +233,9 @@ def main():
     q = manager.Queue()
     pool = mp.Pool(processes=int(args.threads) + 1)
     # init listener here
-
+    listener = pool.apply_async(_listener, (q, args.outfile))
+    
+    q.put("test")
     jobs = []
     for i in inputSeqs: 
         print(i)
@@ -238,6 +247,7 @@ def main():
     for job in jobs:
         job.get()
     q.put("done")
+    listener.get()
     pool.close()
     pool.join()
 
