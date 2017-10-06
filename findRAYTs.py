@@ -13,6 +13,7 @@ import sys
 import mmap
 import re
 import os
+import csv
 import argparse
 import shutil
 import multiprocessing as mp
@@ -102,12 +103,14 @@ class parse_taxonomy():
                     break
         return list(zip(ranks, taxids))
 
-def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
+def _worker(fasta, seqType, name, hmm, q, evalue=1e-20, outfile=None):
     tax = parse_taxonomy()
     if seqType == "faa":
         faa = fasta
+        return #not supported for now
     elif seqType == "fna":
         faa = micomplete.create_proteome(fasta)
+        return #not supported for now
     elif re.match("(gb.?.?)|genbank", seqType):
         name = get_gbk_feature(fasta, 'organism')
         faa = micomplete.extract_gbk_trans(fasta, name + '.faa')
@@ -122,18 +125,40 @@ def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
     if not name:
         name = baseName
     gene_matches = get_RAYTs(faa, name, hmm, evalue)
-    rayt_gene_list = extract_hits(faa, seqType, gene_matches)
+    rayt_gene_objects = extract_hits(faa, seqType, gene_matches)
+    compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q)
     return faa
 
-def _listener(q, outfile='-'):
+def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q):
+    for gene, match in gene_matches.items():
+        print(match)
+        result = {}
+        result['name'] = name
+        result['match'] = match[0][0]
+        result['evalue'] = match[0][1]
+        result['gene'] = gene
+        result['taxid'] = taxid
+        result.update(taxonomy)
+        result['gene_path'] = '-' #placeholder
+        result['genome_path'] = fasta
+        result['proteome_path'] = faa
+        q.put(result)
+    return
+
+def _listener(q, headers, outfile='-'):
     """Process to write results in a thread safe manner"""
     with open_stdout(outfile) as handle:
         while True:
-            output = q.get()
-            if output == "done":
+            out_object = q.get()
+            if out_object == "done":
                 break
-            elif type(output) is dict:
-                handle.write(output)
+            elif type(out_object) is dict:
+                for header in headers:
+                    try:
+                        handle.write(out_object[header.lower()] + '\t')
+                    except KeyError:
+                        handle.write('-' + '\t')
+                handle.write('\n')
             continue
 
 @contextmanager
@@ -181,6 +206,8 @@ def extract_hits(faa, seqType, gene_RAYT):
     rayt_proteins = [ seq for seq in SeqIO.parse(faa, "fasta") if seq.id in
             rayt_gene_list ]
     print(rayt_proteins)
+    for i in rayt_proteins:
+        print(type(i))
     return rayt_proteins
 
 def get_gbk_feature(handle, feature_type):
@@ -191,6 +218,28 @@ def get_gbk_feature(handle, feature_type):
             if feature.type == "source":
                 value = ''.join(feature.qualifiers[feature_type])
     return value
+
+def init_results_table(outfile=None):
+    headers = [
+            'Match',
+            'Gene',
+            'Evalue',
+            'Name',
+            'TaxID',
+            'Superkingdom',
+            'Phylum',
+            'Order',
+            'Family',
+            'Genus',
+            'Species',
+            'Gene_path',
+            'Genome_path',
+            'Proteome_path'
+            ]
+    with open_stdout(outfile) as handle:    
+        writer = csv.writer(handle, delimiter='\t')
+        writer.writerow(headers)
+    return headers
 
 def main():
     parser = argparse.ArgumentParser(description="""For a given set of genomes
@@ -223,6 +272,7 @@ def main():
         except AssertionError:
             raise RuntimeError('Unable to find hmmsearch in path')
 
+    headers = init_results_table()
     # Initialise taxdump, threadsafety
     parse_taxonomy()
 
@@ -233,7 +283,7 @@ def main():
     q = manager.Queue()
     pool = mp.Pool(processes=int(args.threads) + 1)
     # init listener here
-    listener = pool.apply_async(_listener, (q, args.outfile))
+    listener = pool.apply_async(_listener, (q, headers, args.outfile))
     
     q.put("test")
     jobs = []
@@ -241,7 +291,7 @@ def main():
         print(i)
         if len(i) == 2:
             i.append(None)
-        job = pool.apply_async(_worker, (i[0], i[1], i[2], args.hmms))
+        job = pool.apply_async(_worker, (i[0], i[1], i[2], args.hmms, q))
         jobs.append(job)
     # get() all processes to catch errors
     for job in jobs:
