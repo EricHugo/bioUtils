@@ -75,7 +75,8 @@ class parse_taxonomy():
         """Given taxid, return full scientific name"""
         with open(self.tax_names, 'r') as names_file:
             for tax in names_file:
-                if re.fullmatch(taxid, tax.split('|')[0].strip()):
+                if re.fullmatch(taxid, tax.split('|')[0].strip()) and \
+                   re.fullmatch('scientific name', tax.split('|')[3].strip()):
                     name = tax.split('|')[1].strip()
                     break
         return name
@@ -100,7 +101,6 @@ class parse_taxonomy():
                     ranks[0] = "Name"
                     break
         return list(zip(ranks, taxids))
-                
 
 def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
     tax = parse_taxonomy()
@@ -117,7 +117,7 @@ def _worker(fasta, seqType, name, hmm, evalue=1e-20, outfile=sys.stdout):
         taxonomy = { rank: tax.find_scientific_name(taxid) for rank, taxid in lineage }
         print(taxonomy)
     else:
-        raise TypeError('Sequence type needs to be one of faa/fna/gbk')
+        raise TypeError('Sequence type needs to be specified as one of faa/fna/gbk')
     baseName = os.path.basename(fasta).split('.')[0]
     if not name:
         name = baseName
