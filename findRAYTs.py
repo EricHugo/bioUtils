@@ -65,9 +65,10 @@ class parse_taxonomy():
 
     def find_taxid(self, name):
         """Given full scientific name: return taxid"""
+        taxid = ''
         with open(self.tax_names, 'r') as names_file:
             for tax in names_file:
-                if re.fullmatch(name, tax.split('|')[1].strip()):
+                if re.fullmatch(re.escape(name), tax.split('|')[1].strip()):
                     taxid = tax.split('|')[0].strip()
                     break
         return taxid
@@ -113,12 +114,13 @@ def _worker(fasta, seqType, name, hmm, q, evalue=1e-20, outfile=None):
         return #not supported for now
     elif re.match("(gb.?.?)|genbank", seqType):
         name = get_gbk_feature(fasta, 'organism')
-        faa = micomplete.extract_gbk_trans(fasta, name + '.faa')
+        faa = micomplete.extract_gbk_trans(fasta, re.sub('\)|\(|\{|\}|\[|\]|\/|\/', '', name) + '.faa')
         taxid = tax.find_taxid(name)
-        lineage = tax.parse_taxa(taxid)
-        print(lineage)
-        taxonomy = { rank: tax.find_scientific_name(taxid) for rank, taxid in lineage }
-        print(taxonomy)
+        if taxid:
+            lineage = tax.parse_taxa(taxid)
+            taxonomy = { rank: tax.find_scientific_name(taxid) for rank, taxid in lineage }
+        else:
+            taxonomy = {}
     else:
         raise TypeError('Sequence type needs to be specified as one of faa/fna/gbk')
     baseName = os.path.basename(fasta).split('.')[0]
@@ -140,8 +142,8 @@ def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q)
         result['taxid'] = taxid
         result.update(taxonomy)
         result['gene_path'] = '-' #placeholder
-        result['genome_path'] = fasta
-        result['proteome_path'] = faa
+        result['genome_path'] = os.path.abspath(fasta)
+        result['proteome_path'] = os.path.abspath(faa)
         q.put(result)
     return
 
@@ -158,6 +160,10 @@ def _listener(q, headers, outfile='-'):
                         handle.write(out_object[header.lower()] + '\t')
                     except KeyError:
                         handle.write('-' + '\t')
+                handle.write('\n')
+            elif type(out_object) is list:
+                for out in out_object:
+                    handle.write(out + '\t')
                 handle.write('\n')
             continue
 
@@ -179,24 +185,18 @@ def open_stdout(outfile):
 
 def get_RAYTs(faa, name, hmm, evalue=1e-20):
     """Retrieves markers in hmm from the given proteome"""
-    comp = calcCompleteness(faa, name, hmm, evalue)
+    comp = calcCompleteness(faa, re.sub('\/', '', name), hmm, evalue)
     foundRAYTs, dupRAYTs, totl = comp.get_completeness()
     # ensure unique, best RAYT match for each gene
     # but allow infinite gene matches for each RAYT
-    print(foundRAYTs)
     gene_matches = defaultdict(list)
     for RAYT, match in foundRAYTs.items():
         for gene, evalue in match:
             if gene not in gene_matches:
                 gene_matches[gene].append([RAYT, evalue])
             elif float(evalue) < float(gene_matches[gene][0][1]):
-                print(evalue)
                 gene_matches[gene].pop()
                 gene_matches[gene].append([RAYT, evalue])
-            print(gene + evalue)
-            print(gene_matches[gene])
-        print(gene_matches[gene])
-    print(gene_matches)
     return gene_matches
 
 def extract_hits(faa, seqType, gene_RAYT):
@@ -205,9 +205,6 @@ def extract_hits(faa, seqType, gene_RAYT):
     rayt_gene_list = set( gene for gene, rayt in gene_RAYT.items() )
     rayt_proteins = [ seq for seq in SeqIO.parse(faa, "fasta") if seq.id in
             rayt_gene_list ]
-    print(rayt_proteins)
-    for i in rayt_proteins:
-        print(type(i))
     return rayt_proteins
 
 def get_gbk_feature(handle, feature_type):
@@ -219,7 +216,7 @@ def get_gbk_feature(handle, feature_type):
                 value = ''.join(feature.qualifiers[feature_type])
     return value
 
-def init_results_table(outfile=None):
+def init_results_table(q, outfile=None):
     headers = [
             'Match',
             'Gene',
@@ -228,6 +225,7 @@ def init_results_table(outfile=None):
             'TaxID',
             'Superkingdom',
             'Phylum',
+            'Class',
             'Order',
             'Family',
             'Genus',
@@ -236,9 +234,12 @@ def init_results_table(outfile=None):
             'Genome_path',
             'Proteome_path'
             ]
-    with open_stdout(outfile) as handle:    
-        writer = csv.writer(handle, delimiter='\t')
-        writer.writerow(headers)
+    if outfile and not outfile == '-':
+        q.put(headers)
+    else:
+        with open_stdout(outfile) as handle:    
+            writer = csv.writer(handle, delimiter='\t')
+            writer.writerow(headers)
     return headers
 
 def main():
@@ -272,7 +273,6 @@ def main():
         except AssertionError:
             raise RuntimeError('Unable to find hmmsearch in path')
 
-    headers = init_results_table()
     # Initialise taxdump, threadsafety
     parse_taxonomy()
 
@@ -281,6 +281,7 @@ def main():
     print(inputSeqs)
     manager = mp.Manager()
     q = manager.Queue()
+    headers = init_results_table(q, args.outfile)
     pool = mp.Pool(processes=int(args.threads) + 1)
     # init listener here
     listener = pool.apply_async(_listener, (q, headers, args.outfile))
