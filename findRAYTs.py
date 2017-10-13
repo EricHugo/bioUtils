@@ -115,6 +115,11 @@ def _worker(fasta, seqType, name, hmm, q, evalue=1e-20, outfile=None):
     elif re.match("(gb.?.?)|genbank", seqType):
         name = get_gbk_feature(fasta, 'organism')
         faa = micomplete.extract_gbk_trans(fasta, re.sub('\)|\(|\{|\}|\[|\]|\/|\/', '', name) + '.faa')
+        # if there is no translation to extract, get contigs and use prodigal
+        # find ORFs instead
+        if os.stat(faa).st_size == 0:
+            fna = get_contigs_gbk(fasta, re.sub('\/', '', name))
+            faa = micomplete.create_proteome(fna, re.sub('\/', '', name))
         taxid = tax.find_taxid(name)
         if taxid:
             lineage = tax.parse_taxa(taxid)
@@ -187,16 +192,20 @@ def get_RAYTs(faa, name, hmm, evalue=1e-20):
     """Retrieves markers in hmm from the given proteome"""
     comp = calcCompleteness(faa, re.sub('\/', '', name), hmm, evalue)
     foundRAYTs, dupRAYTs, totl = comp.get_completeness()
+    print(name + ': ' + str(foundRAYTs) )
     # ensure unique, best RAYT match for each gene
     # but allow infinite gene matches for each RAYT
     gene_matches = defaultdict(list)
-    for RAYT, match in foundRAYTs.items():
-        for gene, evalue in match:
-            if gene not in gene_matches:
-                gene_matches[gene].append([RAYT, evalue])
-            elif float(evalue) < float(gene_matches[gene][0][1]):
-                gene_matches[gene].pop()
-                gene_matches[gene].append([RAYT, evalue])
+    try:
+        for RAYT, match in foundRAYTs.items():
+            for gene, evalue in match:
+                if gene not in gene_matches:
+                    gene_matches[gene].append([RAYT, evalue])
+                elif float(evalue) < float(gene_matches[gene][0][1]):
+                    gene_matches[gene].pop()
+                    gene_matches[gene].append([RAYT, evalue])
+    except AttributeError:
+        print(name + " threw AttributeError")
     return gene_matches
 
 def extract_hits(faa, seqType, gene_RAYT):
@@ -215,6 +224,18 @@ def get_gbk_feature(handle, feature_type):
             if feature.type == "source":
                 value = ''.join(feature.qualifiers[feature_type])
     return value
+
+def get_contigs_gbk(gbk, name):
+    """Extracts all sequences from gbk file, returns filename"""
+    handle = open(gbk, mode='r')
+    if not name:
+        name = os.basename(gbk).split('.')[0]
+    out_handle = open(name, mode='w')
+    for seq in SeqIO.parse(handle, "genbank"):
+        out_handle.write(">" + seq.id + "\n")
+        out_handle.write(str(seq.seq) + "\n")
+    out_handle.close()
+    return name
 
 def init_results_table(q, outfile=None):
     headers = [
