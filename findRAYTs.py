@@ -3,12 +3,13 @@
 from __future__ import print_function
 from Bio import SeqIO
 from micomplete import calcCompleteness
-from micomplete import micomplete
+#from micomplete import micomplete
 from contextlib import contextmanager
 from distutils import spawn
 from collections import defaultdict
 from ftplib import FTP
 from datetime import datetime
+from termcolor import cprint
 import sys
 import mmap
 import re
@@ -20,6 +21,12 @@ import multiprocessing as mp
 import subprocess
 import tarfile
 import hashlib
+
+# import dev version of miComplete
+import importlib.util
+spec = importlib.util.spec_from_file_location("micomplete", "/home/hugoson/git/micomplete/micomplete/micomplete.py")
+micomplete = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(micomplete)
 
 class parse_taxonomy():
     def __init__(self, tax_path='taxonomy'):
@@ -114,16 +121,19 @@ def _worker(fasta, seqType, name, hmm, q, evalue=1e-20, outfile=None):
         return #not supported for now
     elif re.match("(gb.?.?)|genbank", seqType):
         name = get_gbk_feature(fasta, 'organism')
-        faa = micomplete.extract_gbk_trans(fasta, re.sub('\)|\(|\{|\}|\[|\]|\/|\/', '', name) + '.faa')
+        faa = micomplete.extract_gbk_trans(fasta, re.sub('\)|\(|\{|\}|\[|\]|\/|\/', 
+            '', name) + '.faa')
         # if there is no translation to extract, get contigs and use prodigal
         # find ORFs instead
         if os.stat(faa).st_size == 0:
+            os.remove(faa)
             fna = get_contigs_gbk(fasta, re.sub('\/', '', name))
             faa = micomplete.create_proteome(fna, re.sub('\/', '', name))
         taxid = tax.find_taxid(name)
         if taxid:
             lineage = tax.parse_taxa(taxid)
-            taxonomy = { rank: tax.find_scientific_name(taxid) for rank, taxid in lineage }
+            taxonomy = { rank: tax.find_scientific_name(taxid) for rank, taxid 
+                    in lineage }
         else:
             taxonomy = {}
     else:
@@ -132,13 +142,15 @@ def _worker(fasta, seqType, name, hmm, q, evalue=1e-20, outfile=None):
     if not name:
         name = baseName
     gene_matches = get_RAYTs(faa, name, hmm, evalue)
-    rayt_gene_objects = extract_hits(faa, seqType, gene_matches)
+    for gene, match in gene_matches.items():
+        gene_matches[gene].append(extract_protein(faa, gene))
     compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q)
     return faa
 
 def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q):
+    gene_matches_items = gene_matches.items()
     for gene, match in gene_matches.items():
-        print(match)
+        #print(match)
         result = {}
         result['name'] = name
         result['match'] = match[0][0]
@@ -146,14 +158,22 @@ def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q)
         result['gene'] = gene
         result['taxid'] = taxid
         result.update(taxonomy)
-        result['gene_path'] = '-' #placeholder
+        result['gene_path'] = os.path.abspath("protein_matches/" + match[1][0].name
+                + ".faa")
         result['genome_path'] = os.path.abspath(fasta)
         result['proteome_path'] = os.path.abspath(faa)
+        # put result dict in queue for listener
         q.put(result)
+        # also put the seq-object
+        q.put(match[1])
     return
 
 def _listener(q, headers, outfile='-'):
     """Process to write results in a thread safe manner"""
+    try:
+        os.mkdir("protein_matches")
+    except FileExistsError:
+        pass
     with open_stdout(outfile) as handle:
         while True:
             out_object = q.get()
@@ -166,11 +186,22 @@ def _listener(q, headers, outfile='-'):
                     except KeyError:
                         handle.write('-' + '\t')
                 handle.write('\n')
-            elif type(out_object) is list:
-                for out in out_object:
-                    handle.write(out + '\t')
-                handle.write('\n')
-            continue
+            if type(out_object) is list:
+                # write aminoacid sequence
+                for seq_object in out_object:
+                    try:
+                        SeqIO.write(seq_object, "protein_matches/" + 
+                                seq_object.name + ".faa", "fasta")
+                    except IOError:
+                        cprint("Unable to output sequence: " + seq_object, "red", 
+                                file=sys.stderr)
+            elif type(out_object) is tuple:
+                for head in out_object:
+                    handle.write(head + "\t")
+                handle.write("\n")
+            else:
+                continue
+    return
 
 @contextmanager
 def open_stdout(outfile):
@@ -208,13 +239,14 @@ def get_RAYTs(faa, name, hmm, evalue=1e-20):
         print(name + " threw AttributeError")
     return gene_matches
 
-def extract_hits(faa, seqType, gene_RAYT):
+def extract_protein(faa, gene_tag):
     """Extract the protein sequences from a given proteome given a dict of 
     gene names"""
-    rayt_gene_list = set( gene for gene, rayt in gene_RAYT.items() )
-    rayt_proteins = [ seq for seq in SeqIO.parse(faa, "fasta") if seq.id in
-            rayt_gene_list ]
-    return rayt_proteins
+    #rayt_gene_list = [ gene for gene, rayt in gene_RAYT.items() ]
+    protein_list = [ seq for seq in SeqIO.parse(faa, "fasta") if seq.id in
+            gene_tag ]
+    #print(protein_list)
+    return protein_list
 
 def get_gbk_feature(handle, feature_type):
     """Get specified organism feature from gbk file"""
@@ -256,6 +288,7 @@ def init_results_table(q, outfile=None):
             'Proteome_path'
             ]
     if outfile and not outfile == '-':
+        headers = tuple(headers)
         q.put(headers)
     else:
         with open_stdout(outfile) as handle:    
