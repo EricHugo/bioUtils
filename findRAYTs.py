@@ -111,7 +111,7 @@ class parse_taxonomy():
                     break
         return list(zip(ranks, taxids))
 
-def _worker(fasta, seqType, name, hmm, q, evalue=1e-20, outfile=None):
+def _worker(fasta, seqType, name, hmm, q, gen_directory, evalue=1e-20, outfile=None):
     tax = parse_taxonomy()
     if seqType == "faa":
         faa = fasta
@@ -144,10 +144,12 @@ def _worker(fasta, seqType, name, hmm, q, evalue=1e-20, outfile=None):
     gene_matches = get_RAYTs(faa, name, hmm, evalue)
     for gene, match in gene_matches.items():
         gene_matches[gene].append(extract_protein(faa, gene))
-    compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q)
-    return faa
+    compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q, 
+            gen_directory)
+    return 
 
-def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q):
+def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q,
+        gen_directory="protein_matches"):
     gene_matches_items = gene_matches.items()
     for gene, match in gene_matches.items():
         #print(match)
@@ -158,7 +160,7 @@ def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q)
         result['gene'] = gene
         result['taxid'] = taxid
         result.update(taxonomy)
-        result['gene_path'] = os.path.abspath("protein_matches/" + match[1][0].name
+        result['gene_path'] = os.path.abspath(gen_directory + '/' + match[1][0].name
                 + ".faa")
         result['genome_path'] = os.path.abspath(fasta)
         result['proteome_path'] = os.path.abspath(faa)
@@ -168,7 +170,7 @@ def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q)
         q.put(match[1])
     return
 
-def _listener(q, headers, outfile='-'):
+def _listener(q, headers, outfile='-', gen_directory="protein_matches"):
     """Process to write results in a thread safe manner"""
     try:
         os.mkdir("protein_matches")
@@ -190,7 +192,7 @@ def _listener(q, headers, outfile='-'):
                 # write aminoacid sequence
                 for seq_object in out_object:
                     try:
-                        SeqIO.write(seq_object, "protein_matches/" + 
+                        SeqIO.write(seq_object, gen_directory + '/' +
                                 seq_object.name + ".faa", "fasta")
                     except IOError:
                         cprint("Unable to output sequence: " + seq_object, "red", 
@@ -305,6 +307,8 @@ def main():
             faa, gbk) provided in a tabular format""")
     parser.add_argument("-o", "--outfile", required=False, default="-",
             help="""Filename to save results. Otherwise prints to stdout.""")
+    parser.add_argument("--gendir", required=False, default="protein_matches",
+            help="""Directory in which to store matched protein sequences""")
     parser.add_argument("--hmms", required=False, default=False,
             help="""Specifies a set of HMMs to be used for completeness check 
                         or linkage analysis""")
@@ -338,7 +342,7 @@ def main():
     headers = init_results_table(q, args.outfile)
     pool = mp.Pool(processes=int(args.threads) + 1)
     # init listener here
-    listener = pool.apply_async(_listener, (q, headers, args.outfile))
+    listener = pool.apply_async(_listener, (q, headers, args.outfile, args.gendir))
     
     q.put("test")
     jobs = []
@@ -346,7 +350,8 @@ def main():
         print(i)
         if len(i) == 2:
             i.append(None)
-        job = pool.apply_async(_worker, (i[0], i[1], i[2], args.hmms, q))
+        job = pool.apply_async(_worker, (i[0], i[1], i[2], args.hmms, q, 
+            args.gendir))
         jobs.append(job)
     # get() all processes to catch errors
     for job in jobs:
