@@ -182,13 +182,16 @@ def _worker(fasta, seqType, name, hmm, q, gen_directory, evalue=1e-20, outfile=N
     gene_matches = get_RAYTs(faa, name, hmm, evalue)
     for gene, match in gene_matches.items():
         gene_matches[gene].append(extract_protein(faa, gene))
+    # make an entry of empty results  
+    if not gene_matches:
+        gene_matches['-'].append(['-', '-'])
+        gene_matches['-'].append(['-'])
     compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q, 
             gen_directory)
     return 
 
 def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q,
         gen_directory="protein_matches"):
-    gene_matches_items = gene_matches.items()
     for gene, match in gene_matches.items():
         #print(match)
         result = {}
@@ -198,8 +201,11 @@ def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q,
         result['gene'] = gene
         result['taxid'] = taxid
         result.update(taxonomy)
-        result['gene_path'] = os.path.abspath(gen_directory + '/' + match[1][0].name
-                + ".faa")
+        try:
+            result['gene_path'] = os.path.abspath(gen_directory + '/' + match[1][0].name
+                    + ".faa")
+        except AttributeError:
+            result['gene_path'] = match[1][0]
         result['genome_path'] = os.path.abspath(fasta)
         result['proteome_path'] = os.path.abspath(faa)
         # put result dict in queue for listener
@@ -232,7 +238,7 @@ def _listener(q, headers, outfile='-', gen_directory="protein_matches"):
                     try:
                         SeqIO.write(seq_object, gen_directory + '/' +
                                 seq_object.name + ".faa", "fasta")
-                    except IOError:
+                    except (IOError, AttributeError):
                         cprint("Unable to output sequence: " + seq_object, "red", 
                                 file=sys.stderr)
             elif type(out_object) is tuple:
@@ -369,15 +375,14 @@ def main():
         except AssertionError:
             raise RuntimeError('Unable to find hmmsearch in path')
 
-    for i in parseMapFile(args.outfile, "match", "RAYT1_pruned", "phylum"):
-        print(i)
-    sys.exit()
+    #for i in parseMapFile(args.outfile, "match", "RAYT1_pruned", "phylum"):
+    #    print(i)
+    #sys.exit()
     # Initialise taxdump, threadsafety
     parse_taxonomy()
 
     with open(args.fastaList) as seq_file:
         inputSeqs = [ seq.strip().split('\t') for seq in seq_file ]
-    print(inputSeqs)
     manager = mp.Manager()
     q = manager.Queue()
     headers = init_results_table(q, args.outfile)
@@ -388,7 +393,6 @@ def main():
     q.put("test")
     jobs = []
     for i in inputSeqs: 
-        print(i)
         if len(i) == 2:
             i.append(None)
         job = pool.apply_async(_worker, (i[0], i[1], i[2], args.hmms, q, 
