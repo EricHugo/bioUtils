@@ -143,7 +143,6 @@ class parseMapFile():
         for mapping in iter(self.gene_mem.readline, bytes()):
             mapping = str(mapping, "utf-8").split('\t')
             if self.query_selection in mapping[self.col]:
-                # column 11 corresponds to gene_path in mapping file
                 return mapping[self.req_col]
         self.gene_mem.seek(0)
         raise StopIteration
@@ -167,7 +166,9 @@ def _worker(fasta, seqType, name, hmm, q, gen_directory, evalue=1e-20, outfile=N
             os.remove(faa)
             fna = get_contigs_gbk(fasta, re.sub('\/', '', name))
             faa = micomplete.create_proteome(fna, re.sub('\/', '', name))
+        print(name)
         taxid = tax.find_taxid(name)
+        print(taxid)
         if taxid:
             lineage = tax.parse_taxa(taxid)
             taxonomy = { rank: tax.find_scientific_name(taxid) for rank, taxid 
@@ -185,7 +186,6 @@ def _worker(fasta, seqType, name, hmm, q, gen_directory, evalue=1e-20, outfile=N
     # make an entry of empty results  
     if not gene_matches:
         gene_matches['-'].append(['-', '-'])
-        gene_matches['-'].append(['-'])
     compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q, 
             gen_directory)
     return 
@@ -201,17 +201,18 @@ def compile_results(name, gene_matches, taxid, taxonomy, fasta, seqType, faa, q,
         result['gene'] = gene
         result['taxid'] = taxid
         result.update(taxonomy)
+        # try to output the gene-file, pass if no genes were found
         try:
-            result['gene_path'] = os.path.abspath(gen_directory + '/' + match[1][0].name
-                    + ".faa")
-        except AttributeError:
-            result['gene_path'] = match[1][0]
+            result['gene_path'] = os.path.abspath(gen_directory + '/' + 
+                    match[1][0].name + ".faa")
+            q.put(match[1])
+        except IndexError:
+            pass
         result['genome_path'] = os.path.abspath(fasta)
         result['proteome_path'] = os.path.abspath(faa)
         # put result dict in queue for listener
         q.put(result)
         # also put the seq-object
-        q.put(match[1])
     return
 
 def _listener(q, headers, outfile='-', gen_directory="protein_matches"):
@@ -301,6 +302,7 @@ def get_gbk_feature(handle, feature_type):
         for feature in record.features:
             if feature.type == "source":
                 value = ''.join(feature.qualifiers[feature_type])
+                break
     return value
 
 def get_contigs_gbk(gbk, name):
@@ -360,8 +362,13 @@ def main():
             group, requires a csv of the appropriate group from the NCBI genome
             browser""")
     parser.add_argument("--glist", required=False, help="""Genome list in csv 
-            format from the NCBI genome browser, required with '--taxa' argument""")
-    parser.add_argument("--threads", required=False, default=1, 
+            format from the NCBI genome browser, required with '--taxa' 
+                        argument""")
+    parser.add_argument("--summary", required=False, help="""Attempts to provide 
+            a summary of pre-exist results file. Provide a file of column(s) to 
+            be summarised and optionally a selection column with a string to 
+            be matched within the selection column""")
+    parser.add_argument("--threads", required=False, default=1, type=int,
             help="""Number of threads to be used concurrently""")
     args = parser.parse_args()
 
@@ -378,6 +385,7 @@ def main():
     #for i in parseMapFile(args.outfile, "match", "RAYT1_pruned", "phylum"):
     #    print(i)
     #sys.exit()
+
     # Initialise taxdump, threadsafety
     parse_taxonomy()
 
@@ -390,7 +398,6 @@ def main():
     # init listener here
     listener = pool.apply_async(_listener, (q, headers, args.outfile, args.gendir))
     
-    q.put("test")
     jobs = []
     for i in inputSeqs: 
         if len(i) == 2:
